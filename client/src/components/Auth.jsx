@@ -20,8 +20,8 @@ export default function Auth({ onAuth }) {
         track(mode === 'login' ? 'login' : 'sign_up');
         onAuth(res); // { token, username, prefs }
       }
-    } catch {
-      setError('Server unreachable.');
+    } catch (e) {
+      setError(e?.message || 'Something went wrong.');
     }
     setBusy(false);
   };
