@@ -1,0 +1,13 @@
+# Render Blueprint — deploys the Socket.io signaling server.
+# Render > New > Blueprint > point at this repo.
+services:
+  - type: web
+    name: privet-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    envVars:
+      - key: ROOM_TTL_MS
+        value: "900000" # 15 min — lower for demos

@@ -63,6 +63,19 @@ same network for chat; camera/mic via `getUserMedia` requires `localhost` or HTT
 Env vars: `PORT` (default 3001), `ROOM_TTL_MS` (default 900000 = 15 min),
 `VITE_SERVER_URL` for the client.
 
+## Deploy for real users
+
+The client is static (Vercel). The server needs a host that supports
+long-lived WebSockets — **not** Vercel serverless. Render/Railway work.
+
+1. **Server → Render:** New → Blueprint → this repo (`render.yaml` is ready),
+   or New → Web Service → root dir `server`, build `npm install`,
+   start `npm start`. You'll get `https://<name>.onrender.com`.
+2. **Client → Vercel:** import repo, root dir `client`, framework Vite.
+   Add env var `VITE_SERVER_URL=https://<name>.onrender.com`, then deploy.
+3. Done — sockets and API calls go to your Render server automatically.
+   (Free Render tiers sleep after idle — first connect may take ~30 s.)
+
 ## 3. Live demo guide (accelerated self-destruct)
 
 **Setup:** start the server with an accelerated TTL so the self-destruct is
