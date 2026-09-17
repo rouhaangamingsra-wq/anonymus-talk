@@ -1,0 +1,16 @@
+{
+  "name": "privet-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ephemeral room signaling server — Express + Socket.io, in-memory state only",
+  "scripts": {
+    "dev": "node index.js",
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
