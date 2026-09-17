@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { login, register } from '../lib/api.js';
+import { login, register } from '../lib/db.js';
 import { track } from '../lib/firebase.js';
 
 export default function Auth({ onAuth }) {

@@ -1,5 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAnalytics, isSupported, logEvent } from 'firebase/analytics';
+import { getAuth } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyA56KTS1juiFA4RVk81Oh4UfHSFcxSq28A',
@@ -12,8 +14,9 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
+export const auth = getAuth(app);
+export const db = getFirestore(app);
 
-// Analytics needs a real browser context — guard so SSR/tests never crash.
 let analytics = null;
 isSupported().then((ok) => {
   if (ok) analytics = getAnalytics(app);

@@ -1,124 +1,117 @@
 # privet — ephemeral private rooms
 
-A self-destructing, real-time communication platform. Rooms live **only in server
-memory** — no database, no logs of content, nothing on disk. When a room dies,
-every trace of it is purged.
+A self-destructing, real-time communication platform. Rooms, messages, signaling
+and accounts live in **Firestore with enforced TTL-style expiry** — every room
+doc carries `lastActivity`, and any client that witnesses expiry purges the room
+and all its subcollections. Media and files are pure peer-to-peer.
 
 ## 1. System Architecture
 
 ```
-┌──────────┐   Socket.io (WebSocket)   ┌───────────────┐   Socket.io   ┌──────────┐
-│ Browser A│ ◄───────────────────────► │  Node/Express │ ◄───────────► │ Browser B│
-│          │   signaling + chat + TTL  │  Socket.io    │               │          │
-│          │ ◄═══════════════════════► │               │               │          │
-└──────────┘   WebRTC P2P: A/V media   └───────────────┘               └──────────┘
+┌──────────┐   Firestore listeners    ┌───────────────┐   Firestore    ┌──────────┐
+│ Browser A│ ◄───────────────────────► │   Firestore   │ ◄────────────► │ Browser B│
+│          │  rooms/members/messages/  │  + Anon Auth  │                │          │
+│          │  signals (SDP + ICE)      │  (serverless) │                │          │
+│          │ ◄═══════════════════════► │               │                │          │
+└──────────┘   WebRTC P2P: A/V media   └───────────────┘                └──────────┘
         └────────────────── + files (RTCDataChannel) ──────────────────┘
 ```
 
 **Two planes:**
 
-| Plane | Transport | Carries | Sees content? |
-|---|---|---|---|
-| Signaling & control | Socket.io over WebSocket | SDP offer/answer, ICE candidates, chat messages, room commands | Yes (relay only, never stored) |
-| Media & files | WebRTC P2P (SRTP) + RTCDataChannel | Audio/video tracks, file chunks | **No** — server never sees it |
+| Plane | Transport | Carries |
+|---|---|---|
+| Signaling & state | Firestore realtime listeners | SDP offer/answer, ICE candidates, messages, room docs |
+| Media & files | WebRTC P2P (SRTP) + RTCDataChannel | Audio/video tracks, file chunks — never touch Firestore |
 
 **Connection flow:**
-1. Host creates a room → server returns a 6-char access code + a secret `hostToken`.
-2. Guest joins with the code → server broadcasts `room:member-joined`.
-3. Each *existing* member creates an `RTCPeerConnection` and sends an SDP **offer**
-   to the newcomer via `webrtc:signal`. The newcomer answers. ICE candidates are
-   trickled the same way.
-4. `STUN stun.l.google.com:19302` resolves each peer's public IP:port so ICE can
-   find a usable candidate pair. (On a LAN demo it picks host candidates instantly.)
-5. File drop uses an `RTCDataChannel` created by the offerer — 16 KB binary chunks
-   with buffered-amount backpressure, reassembled to a Blob on the receiver.
+1. Host creates a room → a `rooms` doc gets a 6-char access code + `hostUid`.
+2. Guest joins with the code → writes a `members/{clientId}` doc.
+3. Every member watches `members/`; the *newer* member sends SDP **offers** to all
+   older members via `signals/` docs (read-once — deleted on delivery). ICE
+   candidates trickle through the same collection.
+4. `STUN stun.l.google.com:19302` resolves public IP:port for NAT traversal.
+5. File drop uses `RTCDataChannel` — 16 KB chunks with backpressure, reassembled
+   into a Blob on the receiver.
 
-**Ephemeral lifecycle (`server/rooms.js`):**
-- `lastActivity` is reset by joins, messages, host actions, and throttled
-  presence pings (`room:activity` on real user input — mouse/keyboard).
-- A sweeper runs every 5 s: idle `> ttlMs` → `destroy('inactivity')`.
-- Last member leaving → `destroy('empty')`. Host can `destroy('host-ended')`.
-- **Code rotation** instantly deletes the old code from `codeIndex` (blocks new
-  joins). With `forceReauth`, all non-host members get a 30 s deadline to resubmit
-  the *new* code or they're kicked by the sweeper.
-- Host disconnect → host privileges migrate to the longest-standing member.
+**Ephemeral lifecycle:**
+- `lastActivity` is bumped by joins, messages, host actions, and throttled input
+  pings (pointer/keyboard). `expiresAt = lastActivity + ttlMs` (15 min).
+- Any client observing an expired room purges it + all subcollections. Chat-log
+  entries watch their room doc — that's what powers the live countdown and the
+  guaranteed cleanup.
+- **Code rotation** overwrites `code` instantly (old code stops matching).
+  `forceReauth` sets `reauthDeadline` + `reauthPending`; members who don't
+  resubmit the new code in 30 s remove themselves.
+- Host leaving → `hostUid` migrates to the longest-standing member.
+- **DMs** are hostless 2-person rooms (`dm_<a>_<b>` deterministic id). The record
+  persists for the chat log; message data is purged when both leave.
 
-> Note on honesty for the presentation: chat *text* does pass through the server
-> (it must, to be relayed). It is held in memory only as long as it takes to
-> broadcast — never written anywhere. Media and files genuinely never touch it.
+> Honest framing for the presentation: data *is* written to Firestore, but with
+> a hard expiry contract — TTL is enforced by watchers, and the delete is a real
+> `deleteDoc` purge of the whole subtree. Media/files still never touch it.
 
-## 2. Run it
+## 2. Firebase setup (one-time, ~3 min)
 
-```bash
-# terminal 1 — signaling server (Node 18+)
-cd server && npm install && npm run dev        # http://localhost:3001
+In [console.firebase.google.com](https://console.firebase.google.com) → project
+`privet-chat-1311f`:
 
-# terminal 2 — client
-cd client && npm install && npm run dev        # http://localhost:5173
-```
+1. **Build → Firestore Database** → Create database → Production mode → pick a
+   region.
+2. **Firestore → Rules** → paste the contents of `firestore.rules` → Publish.
+3. **Build → Authentication → Sign-in method** → enable **Anonymous**.
 
-Open `http://localhost:5173` in **two browser windows** (or two machines on the
-same network for chat; camera/mic via `getUserMedia` requires `localhost` or HTTPS).
+That's it — the config in `client/src/lib/firebase.js` is already wired.
 
-Env vars: `PORT` (default 3001), `ROOM_TTL_MS` (default 900000 = 15 min),
-`VITE_SERVER_URL` for the client.
-
-## Deploy for real users
-
-The client is static (Vercel). The server needs a host that supports
-long-lived WebSockets — **not** Vercel serverless. Render/Railway work.
-
-1. **Server → Render:** New → Blueprint → this repo (`render.yaml` is ready),
-   or New → Web Service → root dir `server`, build `npm install`,
-   start `npm start`. You'll get `https://<name>.onrender.com`.
-2. **Client → Vercel:** import repo, root dir `client`, framework Vite.
-   Add env var `VITE_SERVER_URL=https://<name>.onrender.com`, then deploy.
-3. Done — sockets and API calls go to your Render server automatically.
-   (Free Render tiers sleep after idle — first connect may take ~30 s.)
-
-## 3. Live demo guide (accelerated self-destruct)
-
-**Setup:** start the server with an accelerated TTL so the self-destruct is
-watchable live:
+## 3. Run it
 
 ```bash
-ROOM_TTL_MS=30000 npm run dev   # 30-second rooms (Windows: set ROOM_TTL_MS=30000 first)
+cd client && npm install && npm run dev   # http://localhost:5173
 ```
 
-(Per-room TTL overrides are still accepted via the socket API — clamped to
-10 s–15 min — if you want to wire a debug control back in.)
+No server process needed — open two windows and go.
+
+## 4. Deploy (Vercel only — no env vars needed)
+
+Import the repo in Vercel → **Root Directory: `client`** → framework **Vite** →
+Deploy. Firebase config is public-by-design; there is no server to point at.
+
+## 5. Live demo guide (accelerated self-destruct)
+
+Open the app with a **`?ttl=30`** query param to create 30-second rooms:
+
+```
+http://localhost:5173/?ttl=30        (or your Vercel URL)
+```
 
 **Script:**
 
-1. **Host:** create room → read out the 6-char code. Point at the
-   `self-destruct mm:ss` countdown in the header.
-2. **Guest window:** join with the code → video tiles appear. Mention the
-   offer/answer handshake just happened through the socket.
-3. Send chat messages, toggle mic/cam, **drag a file** into the chat panel —
-   watch the progress bar and the download link appear on the other side.
-   *"Those bytes never touched the server."*
-4. **Host:** click **Rotate code** → try joining with the *old* code from a third
-   window → rejected. Old code is dead instantly.
-5. **Host:** click **Rotate + force re-auth** → guest sees the re-auth modal with
-   a 30 s deadline. Either enter the new code (stays) or let it expire (kicked).
-6. **Finalé:** stop touching the mouse/keyboard and let the countdown hit zero
-   → `room:destroyed` fires on every client, all windows return to the home
-   screen, server logs `destroyed ... — state purged`. Then `ls` the project —
-   there is no database file, no log, nothing. That's the pitch.
-7. **Alt ending:** close every tab → `destroyed (empty)` in the server console.
+1. **Host:** create a room → read out the code → show the `self-destruct mm:ss`
+   countdown in the header.
+2. **Guest window:** join with the code → video tiles appear. The offer/answer
+   handshake just happened through `signals/` docs.
+3. Chat, react (hover a message), delete your own message, **drag a file** in —
+   P2P, never touches Firestore.
+4. **Host:** **Rotate code** → old code rejected instantly in a third window.
+5. **Host:** **Rotate + force re-auth** → guests get a 30 s re-auth modal.
+6. **Finalé:** hands off mouse/keyboard → countdown hits zero → the room doc and
+   every subcollection is purged → everyone lands back on the home screen.
+   Check the Firestore console live: the doc is *gone*, not flagged.
+7. **DMs:** send a chat request from Requests → accept → hostless 2-person room.
+   Leave it → entry stays in the chat log; **Remove** severs your link entirely.
 
-**Backup if WebRTC is blocked** (strict campus network): chat + the full
-lifecycle demo still work — they only need WebSocket.
+**Fallback if WebRTC is blocked** (strict campus network): chat, DMs and the
+full lifecycle still work — they only need Firestore.
 
-## 4. File map
+## 6. File map
 
 ```
-server/
-  index.js    Express + Socket.io wiring, event surface, signaling relay
-  rooms.js    RoomManager — in-memory state, TTL sweeper, host controls
 client/
-  src/lib/socket.js   socket.io-client singleton
-  src/lib/mesh.js     WebRTC full-mesh + data-channel file transfer
-  src/components/Home.jsx  create/join + demo TTL field
-  src/components/Room.jsx  video grid, chat, host controls, re-auth modal
+  src/lib/firebase.js   app init + analytics
+  src/lib/db.js         the whole backend: auth, rooms, TTL, DMs, signaling
+  src/lib/mesh.js       WebRTC full-mesh + data-channel file transfer
+  src/components/       Auth, Sidebar, Home, Requests, Settings, ChatLog, Room
+server/                 legacy Socket.io backend — kept as a local/demo variant
+firestore.rules         paste into Firebase console → Firestore → Rules
+render.yaml             legacy Render blueprint for the server variant
 ```

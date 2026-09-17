@@ -1,0 +1,23 @@
+rules_version = '2';
+
+// Demo-grade rules: any signed-in client (Firebase Anonymous Auth) can read
+// and write everything. For a real deployment, tighten per-collection —
+// e.g. messages writable only by their author, members only by their owner,
+// host actions only by hostUid.
+service cloud.firestore {
+  match /rooms/{roomId} {
+    allow read, write: if request.auth != null;
+    match /{sub=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+  match /users/{username} {
+    allow read, write: if request.auth != null;
+  }
+  match /presence/{username} {
+    allow read, write: if request.auth != null;
+  }
+  match /requests/{requestId} {
+    allow read, write: if request.auth != null;
+  }
+}

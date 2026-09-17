@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { socket } from '../lib/socket.js';
+import * as api from '../lib/db.js';
 import { track } from '../lib/firebase.js';
 import ChatLog from './ChatLog.jsx';
 
@@ -10,20 +10,26 @@ export default function Home({ user, onJoined, notice, chatLog = [], onOpenEntry
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const submit = (event, payload, extra) => {
+  const run = async (fn, event) => {
     if (busy) return;
     setBusy(true);
     setError('');
-    socket.timeout(5000).emit(event, { ...payload, token: user.token }, (err, res) => {
-      setBusy(false);
-      if (err || res?.error) return setError(res?.error || 'Server unreachable.');
-      track(event === 'room:create' ? 'room_create' : 'room_join');
-      onJoined({ ...res, name: payload.name, isHost: res.selfId === res.hostId, hostToken: res.hostToken || null, ...extra });
-    });
+    try {
+      const res = await fn();
+      if (res?.error) return setError(res.error);
+      track(event);
+      onJoined({ ...res, name: name || user.username, isHost: res.hostUid === api.myUid() });
+    } catch {
+      setError('Something went wrong — check your connection.');
+    }
+    setBusy(false);
   };
 
-  const create = () => submit('room:create', { name: name || user.username, roomName });
-  const join = () => submit('room:join', { name: name || user.username, code });
+  // Hidden demo accelerator: open the app with ?ttl=30 for 30-second rooms.
+  const demoTtlSec = Number(new URLSearchParams(location.search).get('ttl')) || undefined;
+  const create = () =>
+    run(() => api.createRoom({ name: name || user.username, roomName, ttlMs: demoTtlSec ? demoTtlSec * 1000 : undefined }), 'room_create');
+  const join = () => run(() => api.joinRoom({ name: name || user.username, code }), 'room_join');
 
   return (
     <div className="home-content">

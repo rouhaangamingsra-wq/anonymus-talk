@@ -11,8 +11,8 @@ const CHUNK = 16 * 1024;
 const MAX_BUFFERED = 1024 * 1024;
 
 export class Mesh {
-  constructor({ socket, onRemoteStream, onPeerGone, onFileProgress, onFileReceived }) {
-    Object.assign(this, { socket, onRemoteStream, onPeerGone, onFileProgress, onFileReceived });
+  constructor({ sendSignal, onRemoteStream, onPeerGone, onFileProgress, onFileReceived }) {
+    Object.assign(this, { sendSignal, onRemoteStream, onPeerGone, onFileProgress, onFileReceived });
     this.peers = new Map(); // remoteSocketId -> { pc, dc, stream, iceQueue }
     this.incoming = new Map(); // `${from}:${fileId}` -> { meta, chunks, received }
     this.localStream = null;
@@ -46,7 +46,7 @@ export class Mesh {
       this.onRemoteStream?.(remoteId, peer.stream);
     };
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate) this.socket.emit('webrtc:signal', { to: remoteId, data: { candidate } });
+      if (candidate) this.sendSignal(remoteId, { candidate: candidate.toJSON() });
     };
     pc.ondatachannel = (e) => this._setupChannel(remoteId, e.channel);
     pc.onconnectionstatechange = () => {
@@ -57,9 +57,7 @@ export class Mesh {
       this._setupChannel(remoteId, pc.createDataChannel('file'));
       pc.createOffer()
         .then((o) => pc.setLocalDescription(o))
-        .then(() =>
-          this.socket.emit('webrtc:signal', { to: remoteId, data: { description: pc.localDescription } })
-        );
+        .then(() => this.sendSignal(remoteId, { description: pc.localDescription.toJSON() }));
     }
     return peer;
   }
@@ -73,7 +71,7 @@ export class Mesh {
       }
       if (description.type === 'offer') {
         await peer.pc.setLocalDescription(await peer.pc.createAnswer());
-        this.socket.emit('webrtc:signal', { to: from, data: { description: peer.pc.localDescription } });
+        this.sendSignal(from, { description: peer.pc.localDescription.toJSON() });
       }
     } else if (candidate) {
       if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(candidate).catch(() => {});
